@@ -5,7 +5,6 @@ import {
   CreatePerson,
   DeleteMovieArgs,
   Movie,
-  MovieCreateInput,
   MovieFindManyArgs,
   MovieFindUniqueArgs,
   Person,
@@ -100,7 +99,10 @@ export class MovieService {
     }
 
     //Relate Review by Person to a Movie
-    const movie = `MATCH (n:Movie{title: '${args.where.id}'}) RETURN n LIMIT 1 `;
+    const movie = await this.neo4jService.read(
+      `MATCH (n:Movie{title: '${args.where.id}'}) RETURN n LIMIT 1 `,
+    );
+
     if (!movie) {
       throw new BadRequestException('Movie is missing');
     }
@@ -111,6 +113,8 @@ export class MovieService {
 
     if (!reviewer) {
       //create person reviewer
+
+      return null;
     } else if (reviewer.records[0].get('reviewCounter') < 3) {
       await this.neo4jService.write(`MATCH (p:Person {name: '${
         args.data?.review.reviewBy.id
@@ -119,19 +123,48 @@ export class MovieService {
       RETURN p`);
     }
 
+    //set relation between movie and review
     await this.createMovieRelations(
-      movie,
+      movie.records[0].get('id'),
       [args.data?.review.reviewBy],
       EnumPersonRelationType.Reviewer,
     );
 
-    //set relation between movie and review
     //if review is greater then 70 ->
-    /*
-      set relation like between reviewer to each movie actor (Like)
-      set relation like between reviewer to each movie director (Like)
+    if (args.data?.review.rating > 70) {
+      const actors = await this.neo4jService.read(
+        `MATCH (:Actor )-[rel:${
+          EnumPersonRelationType.Actor
+        }]-(:Movie{name: '${movie.records[0].get('id')}'})
+        RETURN rel`,
+      );
+      const directors = await this.neo4jService.read(
+        `MATCH (:Director )-[rel:${
+          EnumPersonRelationType.Actor
+        }]-(:Movie{name: '${movie.records[0].get('id')}'})
+        RETURN rel`,
+      );
 
-    */
+      const relatedLikeCommands = [];
+      //set relation like between reviewer to each movie actor (Like)
+      _.map(actors.records, (actor) => {
+        const relatedLikeCommandText = `(${reviewer.records[0].get('id')})-[:${
+          EnumPersonRelationType.Like
+        }]->(${actor.get('id')})`;
+        relatedLikeCommands.push(relatedLikeCommandText);
+      });
+
+      //set relation like between reviewer to each movie director (Like)
+      _.map(directors.records, (director) => {
+        const relatedLikeCommandText = `(${reviewer.records[0].get('id')})-[:${
+          EnumPersonRelationType.Like
+        }]->(${director.get('id')})`;
+        relatedLikeCommands.push(relatedLikeCommandText);
+      });
+
+      //Create like relationships
+      await this.neo4jService.write(`Create ${relatedLikeCommands.join(',')}`);
+    }
 
     return null;
   }
